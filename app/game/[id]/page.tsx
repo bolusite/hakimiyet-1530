@@ -63,10 +63,12 @@ export default function GameRoomPage() {
   );
 
   const voteCount = votes.filter((vote) => vote.vote).length;
-  const canStartVoting = realPlayers.length >= 3;
-  const everyoneVoted =
-    realPlayers.length >= 3 && voteCount >= realPlayers.length;
+  const requiredRealPlayers = game?.is_demo ? 1 : 3;
 
+const canStartVoting = realPlayers.length >= requiredRealPlayers;
+
+const everyoneVoted =
+  realPlayers.length >= requiredRealPlayers && voteCount >= realPlayers.length;
   const fetchData = async () => {
     setLoading(true);
 
@@ -247,10 +249,16 @@ export default function GameRoomPage() {
       return;
     }
 
-    if (realPlayers.length < 3) {
-      alert("Oyunu başlatmak için en az 3 gerçek oyuncu gerekir.");
-      return;
-    }
+const requiredRealPlayers = game.is_demo ? 1 : 3;
+
+if (realPlayers.length < requiredRealPlayers) {
+  alert(
+    game.is_demo
+      ? "Demo oyunu başlatmak için en az 1 oyuncu gerekir."
+      : "Oyunu başlatmak için en az 3 gerçek oyuncu gerekir."
+  );
+  return;
+}
 
     const { error } = await supabase.from("game_start_votes").upsert(
       [
@@ -380,8 +388,8 @@ export default function GameRoomPage() {
         <h1 className="mt-3 text-4xl font-bold">{game.name}</h1>
 
         <p className="mt-3 text-stone-400">
-          Oyun henüz başlamadı. En az 3 gerçek oyuncu ülke seçtikten sonra
-          başlatma oylaması yapılır.
+          Oyun henüz başlamadı. Normal odalarda en az 3 gerçek oyuncu gerekir.
+          Demo odalarda tek oyuncu ile başlatılabilir.
         </p>
 
         <div className="mt-8 grid gap-4 md:grid-cols-4">
@@ -474,7 +482,9 @@ export default function GameRoomPage() {
 
           {!canStartVoting && (
             <p className="mt-3 text-stone-400">
-              Başlatma oylaması için en az 3 gerçek oyuncu gerekir.
+              {game.is_demo
+                ? "Demo oyunu başlatmak için önce bir ülke seçmelisin."
+                : "Başlatma oylaması için en az 3 gerçek oyuncu gerekir."}
             </p>
           )}
 
