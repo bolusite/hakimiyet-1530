@@ -1,75 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "../../../lib/supabase";
-
-const STATES = [
-  {
-    name: "Osmanlı",
-    treasury: 85,
-    army: 90,
-    navy: 75,
-    stability: 80,
-    reputation: 70,
-    spy_network: 65,
-    trade_power: 75,
-    manpower: 90,
-    technology: 70,
-  },
-  {
-    name: "Avusturya",
-    treasury: 70,
-    army: 75,
-    navy: 35,
-    stability: 70,
-    reputation: 80,
-    spy_network: 55,
-    trade_power: 60,
-    manpower: 75,
-    technology: 75,
-  },
-  {
-    name: "Fransa",
-    treasury: 75,
-    army: 80,
-    navy: 55,
-    stability: 65,
-    reputation: 75,
-    spy_network: 60,
-    trade_power: 70,
-    manpower: 80,
-    technology: 75,
-  },
-  {
-    name: "İspanya",
-    treasury: 90,
-    army: 75,
-    navy: 85,
-    stability: 70,
-    reputation: 78,
-    spy_network: 60,
-    trade_power: 85,
-    manpower: 70,
-    technology: 78,
-  },
-  {
-    name: "Macaristan",
-    treasury: 55,
-    army: 65,
-    navy: 10,
-    stability: 50,
-    reputation: 55,
-    spy_network: 45,
-    trade_power: 45,
-    manpower: 60,
-    technology: 60,
-  },
-];
+import { AI_COUNTRIES, PLAYABLE_COUNTRIES } from "../../../lib/game/countries";
 
 type Game = {
   id: string;
+  name: string;
+  status: string;
+  current_turn: number;
+  max_players: number;
   is_demo: boolean;
+  owner_user_id: string | null;
 };
 
 type GamePlayer = {
@@ -79,265 +22,476 @@ type GamePlayer = {
   state_name: string;
 };
 
-export default function GamePage() {
+type StartVote = {
+  id: string;
+  game_id: string;
+  user_id: string;
+  vote: boolean;
+};
+
+export default function GameRoomPage() {
   const params = useParams();
   const gameId = params.id as string;
 
-  const [game, setGame] = useState<Game | null>(null);
   const [userId, setUserId] = useState("");
-  const [selectedState, setSelectedState] = useState("");
-  const [takenStates, setTakenStates] = useState<string[]>([]);
-  const [existingState, setExistingState] = useState("");
+  const [game, setGame] = useState<Game | null>(null);
+  const [players, setPlayers] = useState<GamePlayer[]>([]);
+  const [votes, setVotes] = useState<StartVote[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const fetchUserAndGameData = async () => {
+  const realPlayers = useMemo(
+    () => players.filter((player) => player.user_id !== null),
+    [players]
+  );
+
+  const myPlayer = useMemo(
+    () => players.find((player) => player.user_id === userId),
+    [players, userId]
+  );
+
+  const selectedCountries = useMemo(
+    () => players.map((player) => player.state_name),
+    [players]
+  );
+
+  const availablePlayableCountries = useMemo(
+    () =>
+      PLAYABLE_COUNTRIES.filter(
+        (country) => !selectedCountries.includes(country.state_name)
+      ),
+    [selectedCountries]
+  );
+
+  const voteCount = votes.filter((vote) => vote.vote).length;
+  const canStartVoting = realPlayers.length >= 3;
+  const everyoneVoted =
+    realPlayers.length >= 3 && voteCount >= realPlayers.length;
+
+  const fetchData = async () => {
+    setLoading(true);
+
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+
+    if (userError || !userData.user) {
+      window.location.href = "/login";
+      return;
+    }
+
+    setUserId(userData.user.id);
+
     const { data: gameData, error: gameError } = await supabase
       .from("games")
       .select("*")
       .eq("id", gameId)
       .single();
 
-    if (gameError) {
-      alert("Oyun bilgisi alınamadı: " + gameError.message);
+    if (gameError || !gameData) {
+      alert("Oyun bulunamadı.");
+      window.location.href = "/lobby";
       return;
     }
 
-    setGame(gameData);
+    setGame(gameData as Game);
 
-    const { data: userData, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !userData.user) {
-      alert("Oturum bulunamadı. Lütfen tekrar giriş yap.");
-      window.location.href = "/login";
-      return;
-    }
-
-    const currentUserId = userData.user.id;
-    setUserId(currentUserId);
-
-    const { data: playersData, error: playersError } = await supabase
+    const { data: playersData } = await supabase
       .from("game_players")
       .select("*")
       .eq("game_id", gameId);
 
-    if (playersError) {
-      alert("Oyuncu bilgileri alınamadı: " + playersError.message);
-      return;
-    }
+    setPlayers((playersData || []) as GamePlayer[]);
 
-    const players = playersData as GamePlayer[];
-    const userPlayer = players.find((player) => player.user_id === currentUserId);
+    const { data: votesData } = await supabase
+      .from("game_start_votes")
+      .select("*")
+      .eq("game_id", gameId);
 
-    if (userPlayer) {
-      setExistingState(userPlayer.state_name);
-    }
+    setVotes((votesData || []) as StartVote[]);
 
-    setTakenStates(players.map((player) => player.state_name));
+    setLoading(false);
   };
 
-  const goToDashboard = () => {
-    window.location.href = `/game/${gameId}/dashboard`;
-  };
-
-  const createStateRow = async (stateData: (typeof STATES)[number]) => {
-    const { error } = await supabase.from("game_states").insert([
-      {
-        game_id: gameId,
-        state_name: stateData.name,
-        treasury: stateData.treasury,
-        army: stateData.army,
-        navy: stateData.navy,
-        stability: stateData.stability,
-        reputation: stateData.reputation,
-        spy_network: stateData.spy_network,
-        trade_power: stateData.trade_power,
-        manpower: stateData.manpower,
-        technology: stateData.technology,
-      },
-    ]);
-
-    return error;
-  };
-
-  const fillDemoStates = async (selectedPlayerState: string) => {
-    const remainingStates = STATES.filter(
-      (state) => state.name !== selectedPlayerState
+  const createStateIfMissing = async (stateName: string, isAi = false) => {
+    const profile = [...PLAYABLE_COUNTRIES, ...AI_COUNTRIES].find(
+      (country) => country.state_name === stateName
     );
 
-    for (const state of remainingStates) {
-      const { error: playerError } = await supabase.from("game_players").insert([
+    if (!profile) return;
+
+    await supabase.from("game_states").upsert(
+      [
         {
           game_id: gameId,
-          user_id: null,
-          state_name: state.name,
+          state_name: profile.state_name,
+          treasury: profile.treasury,
+          army: profile.army,
+          navy: 0,
+          stability: profile.stability,
+          reputation: profile.reputation,
+          spy_network: 10,
+          trade_power: profile.trade_power,
+          manpower: profile.manpower,
+          technology: 50,
+          territory: profile.territory,
+          influence: profile.influence,
+          war_exhaustion: 0,
+          economy: profile.economy,
+          rebellion_risk: 10,
+          is_defeated: false,
+          is_ai: isAi,
+          ai_personality: isAi ? profile.ai_personality : null,
+          is_vassal: false,
+          overlord_state: null,
+          score: 0,
         },
-      ]);
-
-      if (playerError && playerError.code !== "23505") {
-        alert("Demo devlet oluşturulamadı: " + playerError.message);
-        return false;
+      ],
+      {
+        onConflict: "game_id,state_name",
       }
-
-      const stateError = await createStateRow(state);
-
-      if (stateError && stateError.code !== "23505") {
-        alert("Demo devlet değerleri oluşturulamadı: " + stateError.message);
-        return false;
-      }
-    }
-
-    return true;
+    );
   };
 
-  const joinGame = async () => {
-    if (!userId || !game) {
-      alert("Kullanıcı veya oyun bilgisi bulunamadı.");
+  const selectCountry = async (stateName: string) => {
+    if (!game) return;
+
+    if (game.status === "active" || game.status === "finished") {
+      alert("Oyun başladıktan sonra ülke seçilemez.");
       return;
     }
 
-    if (existingState) {
-      alert("Bu odada zaten bir devlet seçtin.");
-      goToDashboard();
+    if (myPlayer) {
+      alert("Bu odada zaten bir ülke seçtin.");
       return;
     }
 
-    if (!selectedState) {
-      alert("Devlet seçmelisin.");
+    const alreadyTaken = players.some(
+      (player) => player.state_name === stateName
+    );
+
+    if (alreadyTaken) {
+      alert("Bu ülke başka bir oyuncu tarafından seçilmiş.");
       return;
     }
 
-    if (takenStates.includes(selectedState)) {
-      alert("Bu devlet bu odada zaten seçilmiş.");
-      return;
-    }
-
-    const selectedStateData = STATES.find((state) => state.name === selectedState);
-
-    if (!selectedStateData) {
-      alert("Devlet bilgisi bulunamadı.");
-      return;
-    }
-
-    const { error: playerError } = await supabase.from("game_players").insert([
+    const { error } = await supabase.from("game_players").insert([
       {
         game_id: gameId,
         user_id: userId,
-        state_name: selectedState,
+        state_name: stateName,
       },
     ]);
 
-    if (playerError) {
-      if (playerError.code === "23505") {
-        alert("Bu odada zaten bir devlet seçtin veya bu devlet seçilmiş.");
-      } else {
-        alert("Oyuna katılım hatası: " + playerError.message);
-      }
+    if (error) {
+      alert("Ülke seçilemedi: " + error.message);
       return;
     }
 
-    const stateError = await createStateRow(selectedStateData);
+    await createStateIfMissing(stateName, false);
+    await fetchData();
+  };
 
-    if (stateError && stateError.code !== "23505") {
-      alert("Devlet değerleri oluşturulamadı: " + stateError.message);
+  const addAiCountriesAndStart = async () => {
+    if (!game) return;
+
+    const { data: currentPlayersData } = await supabase
+      .from("game_players")
+      .select("*")
+      .eq("game_id", gameId);
+
+    const currentPlayers = (currentPlayersData || []) as GamePlayer[];
+    const takenCountries = currentPlayers.map((player) => player.state_name);
+
+    const aiCountriesToAdd = AI_COUNTRIES.filter(
+      (country) => !takenCountries.includes(country.state_name)
+    );
+
+    for (const country of aiCountriesToAdd) {
+      await supabase.from("game_players").insert([
+        {
+          game_id: gameId,
+          user_id: null,
+          state_name: country.state_name,
+        },
+      ]);
+
+      await createStateIfMissing(country.state_name, true);
+    }
+
+    const finalPlayerCount = currentPlayers.length + aiCountriesToAdd.length;
+
+    const { error } = await supabase
+      .from("games")
+      .update({
+        status: "active",
+        max_players: finalPlayerCount,
+        started_at: new Date().toISOString(),
+        turn_started_at: new Date().toISOString(),
+        current_turn: 1530,
+        end_turn: 1590,
+      })
+      .eq("id", gameId);
+
+    if (error) {
+      alert("Oyun başlatılamadı: " + error.message);
       return;
     }
 
-    if (game.is_demo) {
-      const demoCompleted = await fillDemoStates(selectedState);
-
-      if (!demoCompleted) {
-        return;
-      }
-    }
-
+    alert("Oyun başladı. Eksik devletler yapay zekâ kontrolüne geçti.");
     window.location.href = `/game/${gameId}/dashboard`;
   };
 
+  const voteStart = async () => {
+    if (!game) return;
+
+    if (!myPlayer) {
+      alert("Başlatma oyu vermek için önce ülke seçmelisin.");
+      return;
+    }
+
+    if (realPlayers.length < 3) {
+      alert("Oyunu başlatmak için en az 3 gerçek oyuncu gerekir.");
+      return;
+    }
+
+    const { error } = await supabase.from("game_start_votes").upsert(
+      [
+        {
+          game_id: gameId,
+          user_id: userId,
+          vote: true,
+        },
+      ],
+      {
+        onConflict: "game_id,user_id",
+      }
+    );
+
+    if (error) {
+      alert("Oy kaydedilemedi: " + error.message);
+      return;
+    }
+
+    const { data: latestVotesData } = await supabase
+      .from("game_start_votes")
+      .select("*")
+      .eq("game_id", gameId)
+      .eq("vote", true);
+
+    const latestVotes = (latestVotesData || []) as StartVote[];
+
+    if (latestVotes.length >= realPlayers.length) {
+      await addAiCountriesAndStart();
+      return;
+    }
+
+    alert("Başlatma oyun kaydedildi. Diğer oyuncular bekleniyor.");
+    await fetchData();
+  };
+
   useEffect(() => {
-    fetchUserAndGameData();
+    fetchData();
+
+    const channel = supabase
+      .channel(`game-room-${gameId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "game_players" },
+        fetchData
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "game_start_votes" },
+        fetchData
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "games" },
+        fetchData
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
+
+  if (loading || !game) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-stone-950 text-stone-100">
+        Yükleniyor...
+      </main>
+    );
+  }
+
+  if (game.status === "active") {
+    return (
+      <main className="min-h-screen bg-stone-950 px-6 py-10 text-stone-100">
+        <div className="mx-auto max-w-4xl rounded-2xl border border-stone-700 bg-stone-900 p-8">
+          <a
+            href="/lobby"
+            className="mb-8 inline-block text-sm text-stone-400 hover:text-stone-200"
+          >
+            ← Lobiye dön
+          </a>
+
+          <p className="text-sm uppercase tracking-[0.35em] text-amber-400">
+            Hâkimiyet: 1530
+          </p>
+
+          <h1 className="mt-3 text-3xl font-bold">{game.name}</h1>
+
+          <p className="mt-4 text-stone-400">
+            Oyun başladı. Ülken üzerinden aksiyon almak için dashboard’a geç.
+          </p>
+
+          <div className="mt-6 flex gap-3">
+            <a
+              href="/lobby"
+              className="rounded-xl border border-stone-600 px-5 py-3 text-stone-200 hover:bg-stone-800"
+            >
+              Lobiye Dön
+            </a>
+
+            <a
+              href={`/game/${gameId}/dashboard`}
+              className="rounded-xl bg-amber-500 px-5 py-3 font-semibold text-stone-950 hover:bg-amber-400"
+            >
+              Dashboard’a Git
+            </a>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-stone-950 px-6 py-10 text-stone-100">
-      <div className="mx-auto max-w-4xl">
-        <p className="mb-3 text-sm uppercase tracking-[0.35em] text-amber-400">
-          Hâkimiyet: 1530
-        </p>
-
-        <h1 className="mb-3 text-3xl font-bold">Devlet Seç</h1>
-
-        {game?.is_demo && (
-          <p className="mb-6 rounded-xl border border-amber-700 bg-amber-950/20 p-4 text-sm text-amber-200">
-            Demo mod aktif. Sen bir devlet seçtikten sonra diğer devletler test
-            oyuncusu olarak otomatik doldurulacak.
-          </p>
-        )}
-
-        {existingState ? (
-          <div className="rounded-2xl border border-amber-500 bg-stone-900 p-6">
-            <p className="text-stone-300">
-              Bu odada daha önce <strong>{existingState}</strong> devletini seçtin.
-            </p>
-
-            <button
-              onClick={goToDashboard}
-              className="mt-6 rounded-xl bg-amber-500 px-6 py-3 font-semibold text-stone-950 hover:bg-amber-400"
-            >
-              Oyuna Devam Et
-            </button>
-          </div>
-        ) : (
-          <>
-            <p className="mb-8 text-stone-400">
-              Her kullanıcı bu odada yalnızca bir devlet seçebilir.
-            </p>
-
-            <div className="grid gap-4">
-              {STATES.map((state) => {
-                const isTaken = takenStates.includes(state.name);
-                const isSelected = selectedState === state.name;
-
-                return (
-                  <button
-                    key={state.name}
-                    disabled={isTaken}
-                    onClick={() => setSelectedState(state.name)}
-                    className={`rounded-xl border px-6 py-4 text-left transition ${
-                      isTaken
-                        ? "cursor-not-allowed border-stone-800 bg-stone-900 text-stone-600"
-                        : isSelected
-                        ? "border-amber-400 bg-stone-800 text-stone-100"
-                        : "border-stone-700 bg-stone-900 text-stone-100 hover:bg-stone-800"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-semibold">{state.name}</span>
-
-                      {isTaken ? (
-                        <span className="text-sm text-stone-500">Seçildi</span>
-                      ) : (
-                        <span className="text-sm text-amber-400">Müsait</span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            <button
-              onClick={joinGame}
-              className="mt-8 rounded-xl bg-amber-500 px-6 py-3 font-semibold text-stone-950 hover:bg-amber-400"
-            >
-              Oyuna Katıl
-            </button>
-          </>
-        )}
-
+      <div className="mx-auto max-w-6xl">
         <a
           href="/lobby"
-          className="mt-6 block text-sm text-stone-400 hover:text-stone-200"
+          className="mb-8 inline-block text-sm text-stone-400 hover:text-stone-200"
         >
           ← Lobiye dön
         </a>
+
+        <p className="text-sm uppercase tracking-[0.35em] text-amber-400">
+          Hâkimiyet: 1530
+        </p>
+
+        <h1 className="mt-3 text-4xl font-bold">{game.name}</h1>
+
+        <p className="mt-3 text-stone-400">
+          Oyun henüz başlamadı. En az 3 gerçek oyuncu ülke seçtikten sonra
+          başlatma oylaması yapılır.
+        </p>
+
+        <div className="mt-8 grid gap-4 md:grid-cols-4">
+          <div className="rounded-2xl border border-stone-700 bg-stone-900 p-5">
+            <p className="text-sm text-stone-400">Gerçek Oyuncu</p>
+            <p className="mt-2 text-3xl font-bold text-amber-400">
+              {realPlayers.length}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-stone-700 bg-stone-900 p-5">
+            <p className="text-sm text-stone-400">Başlatma Oyları</p>
+            <p className="mt-2 text-3xl font-bold text-amber-400">
+              {voteCount}/{realPlayers.length}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-stone-700 bg-stone-900 p-5">
+            <p className="text-sm text-stone-400">Durum</p>
+            <p className="mt-2 text-xl font-semibold text-amber-400">
+              {canStartVoting ? "Oylama Hazır" : "Oyuncular Bekleniyor"}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-stone-700 bg-stone-900 p-5">
+            <p className="text-sm text-stone-400">Senin Ülken</p>
+            <p className="mt-2 text-xl font-semibold text-amber-400">
+              {myPlayer ? myPlayer.state_name : "Seçilmedi"}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-8 rounded-2xl border border-stone-700 bg-stone-900 p-6">
+          <h2 className="text-2xl font-semibold">Ülke Seçimi</h2>
+
+          {myPlayer ? (
+            <p className="mt-3 rounded-xl border border-emerald-700 bg-emerald-950/20 p-4 text-emerald-300">
+              {myPlayer.state_name} seçildi. Diğer oyuncular bekleniyor.
+            </p>
+          ) : (
+            <div className="mt-6 grid gap-3 md:grid-cols-5">
+              {availablePlayableCountries.map((country) => (
+                <button
+                  key={country.state_name}
+                  onClick={() => selectCountry(country.state_name)}
+                  className="rounded-xl border border-stone-700 bg-stone-800 p-4 text-left hover:border-amber-500"
+                >
+                  <p className="font-semibold text-amber-400">
+                    {country.state_name}
+                  </p>
+                  <p className="mt-2 text-xs text-stone-400">
+                    {country.role}
+                  </p>
+                  <p className="mt-2 text-xs text-stone-500">
+                    Toprak {country.territory} · Ordu {country.army} · Ekonomi{" "}
+                    {country.economy}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-8 rounded-2xl border border-stone-700 bg-stone-900 p-6">
+          <h2 className="text-2xl font-semibold">Oyuncular</h2>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            {players.length === 0 ? (
+              <p className="text-stone-400">Henüz ülke seçilmedi.</p>
+            ) : (
+              players.map((player) => (
+                <div
+                  key={player.id}
+                  className="rounded-xl border border-stone-700 bg-stone-800 p-4"
+                >
+                  <p className="font-semibold text-amber-400">
+                    {player.state_name}
+                  </p>
+                  <p className="mt-1 text-sm text-stone-400">
+                    {player.user_id ? "Oyuncu" : "Yapay Zekâ"}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="mt-8 rounded-2xl border border-stone-700 bg-stone-900 p-6">
+          <h2 className="text-2xl font-semibold">Oyunu Başlat</h2>
+
+          {!canStartVoting && (
+            <p className="mt-3 text-stone-400">
+              Başlatma oylaması için en az 3 gerçek oyuncu gerekir.
+            </p>
+          )}
+
+          {canStartVoting && !everyoneVoted && (
+            <p className="mt-3 text-stone-400">
+              Tüm oyuncular “Başlasın” oyu verdiğinde oyun başlayacak.
+            </p>
+          )}
+
+          <button
+            onClick={voteStart}
+            disabled={!canStartVoting || !myPlayer}
+            className="mt-5 rounded-xl bg-amber-500 px-6 py-3 font-semibold text-stone-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:bg-stone-700 disabled:text-stone-400"
+          >
+            Başlasın Oyu Ver
+          </button>
+        </div>
       </div>
     </main>
   );
